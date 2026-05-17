@@ -1,8 +1,9 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install --omit=dev 
 COPY . .
+
 FROM node:20-alpine AS runtime
 LABEL maintainer="VidalCasino"
 WORKDIR /app
