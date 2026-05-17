@@ -1,13 +1,94 @@
-name: Deploy
+name: Build & Deploy Backend Casino
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "deploy" ]
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
+
+  build:
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Login a Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
+
+      - name: Build imagen BD
+        run: |
+          docker build \
+            -t ${{ secrets.DOCKER_HUB_USERNAME }}/casino-db:latest \
+            -t ${{ secrets.DOCKER_HUB_USERNAME }}/casino-db:${{ github.sha }} \
+            -t ${{ secrets.DOCKER_HUB_USERNAME }}/casino-db:v1.0.0 \
+            ./db
+
+      - name: Build imagen Backend
+        run: |
+          docker build \
+            -t ${{ secrets.DOCKER_HUB_USERNAME }}/vidal-backend:latest \
+            -t ${{ secrets.DOCKER_HUB_USERNAME }}/vidal-backend:${{ github.sha }} \
+            -t ${{ secrets.DOCKER_HUB_USERNAME }}/vidal-backend:v1.0.0 \
+            .
+
+  push:
+    runs-on: self-hosted
+    needs: build
+    steps:
+      - name: Login a Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
+
+      - name: Push imagen BD
+        run: docker push ${{ secrets.DOCKER_HUB_USERNAME }}/casino-db --all-tags
+
+      - name: Push imagen Backend
+        run: docker push ${{ secrets.DOCKER_HUB_USERNAME }}/vidal-backend --all-tags
+
+  deploy:
+    runs-on: self-hosted
+    needs: push
+    steps:
+      - name: Eliminar contenedores anteriores
+        run: docker rm -f casino-backend casino-db || true
+
+      - name: Limpiar volumen y red
+        run: |
+          docker volume rm casino-db-data || true
+          docker network create casino-net || true
+          docker volume create casino-db-data
+
+      - name: Pull imágenes nuevas
+        run: |
+          docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/casino-db:latest
+          docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/vidal-backend:latest
+
+      - name: Levantar BD
+        run: |
+          docker run -d --name casino-db \
+            --network casino-net \
+            -v casino-db-data:/var/lib/postgresql/data \
+            -e POSTGRES_PASSWORD=${{ secrets.DB_PASSWORD }} \
+            -e POSTGRES_USER=${{ secrets.DB_USER }} \
+            -e POSTGRES_DB=${{ secrets.DB_NAME }} \
+            ${{ secrets.DOCKER_HUB_USERNAME }}/casino-db:latest
+
+      - name: Esperar que Postgres esté listo
+        run: |
+          until docker exec casino-db pg_isready -U ${{ secrets.DB_USER }}; do
+            echo "Esperando BD..."
+            sleep 2
+          done
+
+      - name: Levantar Backend
+        run: |
+          docker run -d --name casino-backend \
+            --network casino-net \
+            -p 3000:3000 \
+            -e DB_HOST=casino-db \
+            -e DB_PORT=5432 \
+            -e DB_USER=${{ secrets.DB_USER }} \
+            -e DB_PASSWORD=${{ secrets.DB_PASSWORD }} \
+            -e DB_NAME=${{ secrets.DB_NAME }} \
+            -e JWT_SECRET=${{ secrets.JWT_SECRET }} \
+            ${{ secrets.DOCKER_HUB_USERNAME }}/vidal-backend:latest
 
